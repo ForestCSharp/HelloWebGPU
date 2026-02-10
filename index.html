@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hello WebGPU</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div class="header-left">
+          <button id="compile-btn" class="compile-button">Compile & Run</button>
+          <select id="example-select" class="example-select">
+            <option value="example1">Example 1</option>
+            <option value="example2">Example 2</option>
+          </select>
+        </div>
+        <h1>Hello WebGPU</h1>
+      </header>
+      <main>
+        <div id="editor-container">
+          <div id="editor-pane">
+            <div id="monaco-editor"></div>
+          </div>
+          <div id="output-pane">
+            <div id="canvas-container">
+              <canvas id="webgpu-canvas"></canvas>
+            </div>
+            <div id="console-output"></div>
+            <div id="error-message" class="hidden"></div>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

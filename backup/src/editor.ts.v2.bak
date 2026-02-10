@@ -1,0 +1,376 @@
+import * as monaco from 'monaco-editor';
+import loader from '@monaco-editor/loader';
+import type { editor } from 'monaco-editor';
+
+let editorInstance: editor.IStandaloneCodeEditor | null = null;
+let monacoInstance: typeof monaco | null = null;
+
+export async function initializeEditor(): Promise<editor.IStandaloneCodeEditor> {
+  loader.config({ monaco });
+
+  monacoInstance = await loader.init();
+
+  // Set up TypeScript
+  const tsDefaults = (monacoInstance!.languages.typescript as any).typescriptDefaults;
+  tsDefaults.setCompilerOptions({
+    target: (monacoInstance!.languages.typescript as any).ScriptTarget.ES2022,
+    allowNonTsExtensions: true,
+    moduleResolution: (monacoInstance!.languages.typescript as any).ModuleResolutionKind.NodeJs,
+    module: (monacoInstance!.languages.typescript as any).ModuleKind.ESNext,
+    noEmit: false,
+    esModuleInterop: true,
+    strict: true,
+    skipLibCheck: true,
+  });
+
+  // Create editor
+  const editorContainer = document.getElementById('monaco-editor');
+  if (!editorContainer) {
+    throw new Error('Monaco editor container not found');
+  }
+
+  const editor = monacoInstance!.editor.create(editorContainer, {
+    value: getInitialCode(),
+    language: 'typescript',
+    theme: 'vs-dark',
+    automaticLayout: true,
+    minimap: { enabled: false },
+    fontSize: 14,
+    lineNumbers: 'on',
+    scrollBeyondLastLine: false,
+    wordWrap: 'on',
+  });
+
+  editorInstance = editor;
+  return editor;
+}
+
+export function getEditorInstance(): editor.IStandaloneCodeEditor | null {
+  return editorInstance;
+}
+
+let currentRenderer: any = null;
+let hasValidCode = false;
+
+export function setRenderer(renderer: any): void {
+  currentRenderer = renderer;
+}
+
+export function getHasValidCode(): boolean {
+  return hasValidCode;
+}
+
+export function clearCanvas(): void {
+  if (!currentRenderer) return;
+
+  try {
+    const device = currentRenderer.device;
+    const context = currentRenderer.context;
+
+    const commandEncoder = device.createCommandEncoder();
+    const textureView = context.getCurrentTexture().createView();
+
+    const renderPass = {
+      colorAttachments: [
+        {
+          view: textureView,
+          clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+    };
+
+    const passEncoder = commandEncoder.beginRenderPass(renderPass);
+    passEncoder.end();
+
+    device.queue.submit([commandEncoder.finish()]);
+  } catch (error) {
+    console.error('Failed to clear canvas:', error);
+  }
+}
+
+/**
+ * Transpile TypeScript code to JavaScript using Monaco's TypeScript worker
+ */
+async function transpileTypeScript(tsCode: string): Promise<{
+  jsCode: string;
+  errors: Array<{ line: number; message: string }>;
+}> {
+  if (!monacoInstance) {
+    throw new Error('Monaco not initialized');
+  }
+
+  // Get the TypeScript worker (use type assertion for Monaco's API)
+  const tsLanguage = monacoInstance.languages.typescript as any;
+  const getTsWorker = await tsLanguage.getTypeScriptWorker();
+
+  // Use the existing editor model if available, otherwise create a new one
+  let model = editorInstance?.getModel();
+  let shouldDispose = false;
+
+  if (!model) {
+    // Create a temporary model for transpilation
+    const uri = monacoInstance.Uri.parse('file:///temp-renderer-' + Date.now() + '.ts');
+    model = monacoInstance.editor.createModel(tsCode, 'typescript', uri);
+    shouldDispose = true;
+  } else {
+    // Update existing model with new code
+    model.setValue(tsCode);
+  }
+
+  try {
+    // Wait for the model to sync with the TypeScript worker
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Now get the worker for this specific model
+    const tsWorker = await getTsWorker(model.uri);
+
+    // Get transpiled JavaScript
+    const emitOutput = await tsWorker.getEmitOutput(model.uri.toString());
+    const jsCode = emitOutput.outputFiles[0]?.text || '';
+
+    // Get semantic diagnostics (type errors)
+    const semanticDiagnostics = await tsWorker.getSemanticDiagnostics(model.uri.toString());
+    const syntacticDiagnostics = await tsWorker.getSyntacticDiagnostics(model.uri.toString());
+    const allDiagnostics = [...syntacticDiagnostics, ...semanticDiagnostics];
+
+    // Extract error information
+    const errors = allDiagnostics.map((diagnostic: any) => {
+      let messageText: string;
+      if (typeof diagnostic.messageText === 'string') {
+        messageText = diagnostic.messageText;
+      } else {
+        messageText = diagnostic.messageText.messageText;
+      }
+
+      // Get line number from diagnostic
+      let line = 1;
+      if (diagnostic.start !== undefined) {
+        const position = model!.getPositionAt(diagnostic.start);
+        line = position.lineNumber;
+      }
+
+      return { line, message: messageText };
+    });
+
+    return { jsCode, errors };
+  } finally {
+    // Clean up temporary model only if we created it
+    if (shouldDispose) {
+      model.dispose();
+    }
+  }
+}
+
+export async function executeRenderCode(code: string): Promise<void> {
+  try {
+    if (!currentRenderer) {
+      throw new Error('No renderer instance available');
+    }
+
+    // Import the required dependencies
+    const { triangleShaders, createShaderModule } = await import('./webgpu/shaders.js');
+
+    // Transpile TypeScript to JavaScript using Monaco's worker
+    const { jsCode, errors } = await transpileTypeScript(code);
+
+    // If there are TypeScript errors, show the first one
+    if (errors.length > 0) {
+      const firstError = errors[0];
+      throw new Error(`Line ${firstError.line}: ${firstError.message}`);
+    }
+
+    // Simple transformation: remove export and rename class
+    const transformedCode = jsCode.replace(/export\s+class\s+Renderer/, 'class UserRenderer');
+
+    console.log('Executing transpiled code:', transformedCode);
+
+    // Execute the code in a safe context
+    const buildRenderer = new Function(
+      'triangleShaders',
+      'createShaderModule',
+      'device',
+      'context',
+      'format',
+      transformedCode + '\nreturn new UserRenderer({device, context, format});'
+    );
+
+    // Build the renderer instance
+    const userRenderer = buildRenderer(
+      triangleShaders,
+      createShaderModule,
+      currentRenderer.device,
+      currentRenderer.context,
+      currentRenderer.format
+    );
+
+    // Initialize the user's renderer
+    await userRenderer.initialize();
+
+    // Update the current renderer with the new pipeline and vertex buffer
+    currentRenderer.pipeline = userRenderer.pipeline;
+    currentRenderer.vertexBuffer = userRenderer.vertexBuffer;
+
+    // Replace the render method
+    currentRenderer.render = userRenderer.render.bind(currentRenderer);
+
+    // Mark code as valid
+    hasValidCode = true;
+
+    // Hide any previous error messages
+    const errorElement = document.getElementById('error-message') as HTMLDivElement;
+    if (errorElement) {
+      errorElement.classList.add('hidden');
+      errorElement.textContent = '';
+    }
+
+    console.log('Renderer updated successfully');
+  } catch (error) {
+    // Mark code as invalid and clear canvas
+    hasValidCode = false;
+    clearCanvas();
+
+    console.error('Failed to execute renderer code:', error);
+    const errorElement = document.getElementById('error-message') as HTMLDivElement;
+    if (errorElement) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // Enhance error display with line number highlighting
+      let displayMessage = errorMessage;
+      let lineNumber: string | null = null;
+
+      if (errorMessage.includes('Line ')) {
+        // Extract line number for special formatting
+        const lineMatch = errorMessage.match(/Line (\d+):/);
+        if (lineMatch) {
+          lineNumber = lineMatch[1];
+          const errorWithoutLine = errorMessage.replace(/Line \d+:/, '').trim();
+          displayMessage = `<span class="error-line-number">Line ${lineNumber}</span><span class="error-message">${errorWithoutLine}</span>`;
+
+          // Highlight the line in the editor if possible
+          const editor = getEditorInstance();
+          if (editor) {
+            const lineIndex = parseInt(lineNumber); // Monaco editor uses 1-based line numbers
+            editor.setPosition({ lineNumber: lineIndex, column: 1 });
+            editor.revealLineInCenter(lineIndex);
+            editor.focus();
+          }
+        }
+      } else {
+        displayMessage = `<span class="error-message">Error: ${errorMessage}</span>`;
+      }
+
+      errorElement.innerHTML = displayMessage;
+      errorElement.classList.remove('hidden');
+    }
+  }
+}
+
+function getInitialCode(): string {
+  return (
+    '// Complete Renderer class - modify the entire class\n' +
+    '// The class has access to these imported dependencies:\n' +
+    '// - triangleShaders: contains vertex and fragment shader code\n' +
+    '// - createShaderModule: function to compile shaders\n' +
+    '\n' +
+    'export class Renderer {\n' +
+    '  private device: GPUDevice;\n' +
+    '  private context: GPUCanvasContext;\n' +
+    '  private format: GPUTextureFormat;\n' +
+    '  private pipeline: GPURenderPipeline | null = null;\n' +
+    '  private vertexBuffer: GPUBuffer | null = null;\n' +
+    '\n' +
+    '  constructor(gpuContext: any) {\n' +
+    '    this.device = gpuContext.device;\n' +
+    '    this.context = gpuContext.context;\n' +
+    '    this.format = gpuContext.format;\n' +
+    '  }\n' +
+    '\n' +
+    '  async initialize(): Promise<void> {\n' +
+    '    // You can use triangleShaders.vertex and triangleShaders.fragment\n' +
+    '    const vertexShaderModule = await createShaderModule(this.device, triangleShaders.vertex);\n' +
+    '    const fragmentShaderModule = await createShaderModule(this.device, triangleShaders.fragment);\n' +
+    '\n' +
+    '    // Example triangle vertices (position + color)\n' +
+    '    const vertices = new Float32Array([\n' +
+    '      // Position, Color\n' +
+    '      0.0, 0.5, 0.0, 1.0, 0.0, 0.0, // Top - Red\n' +
+    '      -0.5, -0.5, 0.0, 0.0, 1.0, 0.0, // Bottom Left - Green\n' +
+    '      0.5, -0.5, 0.0, 0.0, 0.0, 1.0, // Bottom Right - Blue\n' +
+    '    ]);\n' +
+    '\n' +
+    '    this.vertexBuffer = this.device.createBuffer({\n' +
+    '      size: vertices.byteLength,\n' +
+    '      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,\n' +
+    '    });\n' +
+    '    this.device.queue.writeBuffer(this.vertexBuffer, 0, vertices);\n' +
+    '\n' +
+    '    const vertexBufferLayout: GPUVertexBufferLayout = {\n' +
+    '      arrayStride: 24, // 6 floats * 4 bytes\n' +
+    '      attributes: [\n' +
+    '        {\n' +
+    '          format: "float32x3",\n' +
+    '          offset: 0,\n' +
+    '          shaderLocation: 0,\n' +
+    '        },\n' +
+    '        {\n' +
+    '          format: "float32x3",\n' +
+    '          offset: 12,\n' +
+    '          shaderLocation: 1,\n' +
+    '        },\n' +
+    '      ],\n' +
+    '    };\n' +
+    '\n' +
+    '    this.pipeline = this.device.createRenderPipeline({\n' +
+    '      layout: "auto",\n' +
+    '      vertex: {\n' +
+    '        module: vertexShaderModule,\n' +
+    '        entryPoint: "main",\n' +
+    '        buffers: [vertexBufferLayout],\n' +
+    '      },\n' +
+    '      fragment: {\n' +
+    '        module: fragmentShaderModule,\n' +
+    '        entryPoint: "main",\n' +
+    '        targets: [\n' +
+    '          {\n' +
+    '            format: this.format,\n' +
+    '          },\n' +
+    '        ],\n' +
+    '      },\n' +
+    '      primitive: {\n' +
+    '        topology: "triangle-list",\n' +
+    '      },\n' +
+    '    });\n' +
+    '  }\n' +
+    '\n' +
+    '  render(): void {\n' +
+    '    if (!this.pipeline || !this.vertexBuffer) {\n' +
+    '      throw new Error("Renderer not initialized");\n' +
+    '    }\n' +
+    '\n' +
+    '    const commandEncoder = this.device.createCommandEncoder();\n' +
+    '    const textureView = this.context.getCurrentTexture().createView();\n' +
+    '\n' +
+    '    const renderPass: GPURenderPassDescriptor = {\n' +
+    '      colorAttachments: [\n' +
+    '        {\n' +
+    '          view: textureView,\n' +
+    '          clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },\n' +
+    '          loadOp: "clear",\n' +
+    '          storeOp: "store",\n' +
+    '        },\n' +
+    '      ],\n' +
+    '    };\n' +
+    '\n' +
+    '    const passEncoder = commandEncoder.beginRenderPass(renderPass);\n' +
+    '    passEncoder.setPipeline(this.pipeline);\n' +
+    '    passEncoder.setVertexBuffer(0, this.vertexBuffer);\n' +
+    '    passEncoder.draw(3, 1, 0, 0);\n' +
+    '    passEncoder.end();\n' +
+    '\n' +
+    '    this.device.queue.submit([commandEncoder.finish()]);\n' +
+    '  }\n' +
+    '}'
+  );
+}

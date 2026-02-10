@@ -1,0 +1,399 @@
+import * as monaco from 'monaco-editor';
+import loader from '@monaco-editor/loader';
+import type { editor } from 'monaco-editor';
+
+let editorInstance: editor.IStandaloneCodeEditor | null = null;
+
+export async function initializeEditor(): Promise<editor.IStandaloneCodeEditor> {
+  loader.config({ monaco });
+
+  const monacoInstance = await loader.init();
+
+  // Set up TypeScript
+  monacoInstance.languages.typescript.typescriptDefaults.setCompilerOptions({
+    target: monacoInstance.languages.typescript.ScriptTarget.ES2022,
+    allowNonTsExtensions: true,
+    moduleResolution: monacoInstance.languages.typescript.ModuleResolutionKind.NodeJs,
+    module: monacoInstance.languages.typescript.ModuleKind.ESNext,
+    noEmit: true,
+    esModuleInterop: true,
+    strict: true,
+    skipLibCheck: true,
+  });
+
+  // Create editor
+  const editorContainer = document.getElementById('monaco-editor');
+  if (!editorContainer) {
+    throw new Error('Monaco editor container not found');
+  }
+
+  const editor = monacoInstance.editor.create(editorContainer, {
+    value: getInitialCode(),
+    language: 'typescript',
+    theme: 'vs-dark',
+    automaticLayout: true,
+    minimap: { enabled: false },
+    fontSize: 14,
+    lineNumbers: 'on',
+    scrollBeyondLastLine: false,
+    wordWrap: 'on',
+  });
+
+  editorInstance = editor;
+  return editor;
+}
+
+export function getEditorInstance(): editor.IStandaloneCodeEditor | null {
+  return editorInstance;
+}
+
+let currentRenderer: any = null;
+let hasValidCode = false;
+
+export function setRenderer(renderer: any): void {
+  currentRenderer = renderer;
+}
+
+export function getHasValidCode(): boolean {
+  return hasValidCode;
+}
+
+export function clearCanvas(): void {
+  if (!currentRenderer) return;
+
+  try {
+    const device = currentRenderer.device;
+    const context = currentRenderer.context;
+
+    const commandEncoder = device.createCommandEncoder();
+    const textureView = context.getCurrentTexture().createView();
+
+    const renderPass = {
+      colorAttachments: [
+        {
+          view: textureView,
+          clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+    };
+
+    const passEncoder = commandEncoder.beginRenderPass(renderPass);
+    passEncoder.end();
+
+    device.queue.submit([commandEncoder.finish()]);
+  } catch (error) {
+    console.error('Failed to clear canvas:', error);
+  }
+}
+
+export async function executeRenderCode(code: string): Promise<void> {
+  try {
+    if (!currentRenderer) {
+      throw new Error('No renderer instance available');
+    }
+
+    // Import the required dependencies
+    const { triangleShaders, createShaderModule } = await import('./webgpu/shaders.js');
+
+    // Transform TypeScript to JavaScript for execution
+    let transformedCode = code
+      // Remove export keyword and rename class
+      .replace(/export\s+class\s+Renderer/, 'class UserRenderer')
+      // Remove type annotations more carefully - handle property declarations (ending with ; or =)
+      .replace(/(\w+)\s*:\s*GPUDevice\s*([;=])/g, '$1$2')
+      .replace(/(\w+)\s*:\s*GPUCanvasContext\s*([;=])/g, '$1$2')
+      .replace(/(\w+)\s*:\s*GPUTextureFormat\s*([;=])/g, '$1$2')
+      .replace(/(\w+)\s*:\s*GPURenderPipeline\s*([;=])/g, '$1$2')
+      .replace(/(\w+)\s*:\s*GPUBuffer\s*([;=])/g, '$1$2')
+      // Remove union types with null
+      .replace(/(\w+)\s*:\s*GPURenderPipeline\s*\|\s*null\s*=\s*null/g, '$1 = null')
+      .replace(/(\w+)\s*:\s*GPUBuffer\s*\|\s*null\s*=\s*null/g, '$1 = null')
+      .replace(/(\w+)\s*:\s*any\s*\|\s*null\s*=\s*null/g, '$1 = null')
+      // Remove constructor parameter types (handle the specific pattern: param: type)
+      .replace(/constructor\s*\(\s*(\w+)\s*:\s*[^)]+\)/g, 'constructor($1)')
+      // Remove const/let type annotations (safely - require semicolon ending)
+      .replace(/const\s+(\w+)\s*:\s*[A-Za-z0-9_]+\s*=/g, 'const $1 =')
+      .replace(/let\s+(\w+)\s*:\s*[A-Za-z0-9_]+\s*=/g, 'let $1 =')
+      // Remove return type annotations
+      .replace(/\)\s*:\s*Promise<void>/g, ')')
+      .replace(/\)\s*:\s*void/g, ')')
+      // Remove visibility modifiers
+      .replace(/private\s+/g, '')
+      .replace(/public\s+/g, '');
+
+    console.log('Executing transformed code:', transformedCode);
+
+    // Create a line mapping from original to transformed code
+    const originalLines = code.split('\n');
+    const transformedLines = transformedCode.split('\n');
+    const lineMap: { [key: number]: number } = {};
+
+    // Simple line mapping (approximate)
+    let transformIndex = 0;
+    for (let i = 0; i < originalLines.length; i++) {
+      if (transformIndex < transformedLines.length) {
+        lineMap[i + 1] = transformIndex + 1; // Original line -> Transformed line
+        transformIndex++;
+      }
+    }
+
+    // Create a function that builds and returns the renderer with better error handling
+    // Build function body using string concatenation to avoid escaping issues
+    const functionBody =
+      'try {' +
+      '\n  ' +
+      transformedCode.split('\n').join('\n  ') +
+      '\n  ' +
+      '\n  const gpuContext = { device, context, format };' +
+      '\n  return new UserRenderer(gpuContext);' +
+      '\n} catch (error) {' +
+      '\n  const errorMessage = error.message || error.toString();' +
+      "\n  const stack = error.stack || '';" +
+      '\n  ' +
+      '\n  const lineMatch = stack.match(/eval.*:(\\d+):(\\d+)/);' +
+      '\n  if (lineMatch) {' +
+      '\n    const transformedLine = parseInt(lineMatch[1]);' +
+      '\n    let originalLine = 1;' +
+      '\n    for (const [origLine, transLine] of Object.entries(lineMap)) {' +
+      '\n      if (transLine <= transformedLine) {' +
+      '\n        originalLine = parseInt(origLine);' +
+      '\n      } else {' +
+      '\n        break;' +
+      '\n      }' +
+      '\n    }' +
+      '\n    throw new Error("Line " + originalLine + ": " + errorMessage);' +
+      '\n  }' +
+      '\n  ' +
+      '\n  throw error;' +
+      '\n}';
+
+    let buildRenderer;
+    try {
+      buildRenderer = new Function(
+        'triangleShaders',
+        'createShaderModule',
+        'device',
+        'context',
+        'format',
+        'lineMap',
+        functionBody
+      );
+    } catch (syntaxError) {
+      // Handle syntax errors from new Function()
+      const errorMessage = syntaxError instanceof Error ? syntaxError.message : String(syntaxError);
+      const errorStack = syntaxError instanceof Error && syntaxError.stack ? syntaxError.stack : '';
+
+      console.log('Syntax error:', errorMessage);
+      console.log('Stack:', errorStack);
+
+      // Try to extract line number from stack trace (syntax errors have line numbers in stack)
+      // Pattern matches things like "at eval (eval at executeRenderCode" or "<anonymous>:line:col"
+      const stackMatch =
+        errorStack.match(/eval.*:(\d+):(\d+)/) || errorStack.match(/<anonymous>:(\d+):(\d+)/);
+
+      if (stackMatch) {
+        const transformedLine = parseInt(stackMatch[1]);
+
+        console.log('Found line in stack:', transformedLine);
+
+        // Map back to original line - subtract offset for the wrapper function (1 line for try {)
+        const adjustedLine = transformedLine - 1;
+        let originalLine = 1;
+
+        for (const [origLine, transLine] of Object.entries(lineMap)) {
+          if (transLine <= adjustedLine) {
+            originalLine = parseInt(origLine);
+          } else {
+            break;
+          }
+        }
+
+        console.log('Mapped to original line:', originalLine);
+
+        throw new Error(`Line ${originalLine}: ${errorMessage}`);
+      }
+
+      throw syntaxError;
+    }
+
+    // Build the renderer instance
+    const userRenderer = buildRenderer(
+      triangleShaders,
+      createShaderModule,
+      currentRenderer.device,
+      currentRenderer.context,
+      currentRenderer.format,
+      lineMap
+    );
+
+    // Initialize the user's renderer
+    await userRenderer.initialize();
+
+    // Update the current renderer with the new pipeline and vertex buffer
+    currentRenderer.pipeline = userRenderer.pipeline;
+    currentRenderer.vertexBuffer = userRenderer.vertexBuffer;
+
+    // Replace the render method
+    currentRenderer.render = userRenderer.render.bind(currentRenderer);
+
+    // Mark code as valid
+    hasValidCode = true;
+
+    // Hide any previous error messages
+    const errorElement = document.getElementById('error-message') as HTMLDivElement;
+    if (errorElement) {
+      errorElement.classList.add('hidden');
+      errorElement.textContent = '';
+    }
+
+    console.log('Renderer updated successfully');
+  } catch (error) {
+    // Mark code as invalid and clear canvas
+    hasValidCode = false;
+    clearCanvas();
+
+    console.error('Failed to execute renderer code:', error);
+    const errorElement = document.getElementById('error-message') as HTMLDivElement;
+    if (errorElement) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // Enhance error display with line number highlighting
+      let displayMessage = errorMessage;
+      let lineNumber: string | null = null;
+
+      if (errorMessage.includes('Line ')) {
+        // Extract line number for special formatting
+        const lineMatch = errorMessage.match(/Line (\\d+):/);
+        if (lineMatch) {
+          lineNumber = lineMatch[1];
+          const errorWithoutLine = errorMessage.replace(/Line \\d+:/, '').trim();
+          displayMessage = `<span class="error-line-number">Line ${lineNumber}</span><span class="error-message">${errorWithoutLine}</span>`;
+
+          // Highlight the line in the editor if possible
+          const editor = getEditorInstance();
+          if (editor) {
+            const lineIndex = parseInt(lineNumber); // Monaco editor uses 1-based line numbers
+            editor.setPosition({ lineNumber: lineIndex, column: 1 });
+            editor.revealLineInCenter(lineIndex);
+            editor.focus();
+          }
+        }
+      } else {
+        displayMessage = `<span class="error-message">Error: ${errorMessage}</span>`;
+      }
+
+      errorElement.innerHTML = displayMessage;
+      errorElement.classList.remove('hidden');
+    }
+  }
+}
+
+function getInitialCode(): string {
+  return (
+    '// Complete Renderer class - modify the entire class\n' +
+    '// The class has access to these imported dependencies:\n' +
+    '// - triangleShaders: contains vertex and fragment shader code\n' +
+    '// - createShaderModule: function to compile shaders\n' +
+    '\n' +
+    'export class Renderer {\n' +
+    '  private device: GPUDevice;\n' +
+    '  private context: GPUCanvasContext;\n' +
+    '  private format: GPUTextureFormat;\n' +
+    '  private pipeline: GPURenderPipeline | null = null;\n' +
+    '  private vertexBuffer: GPUBuffer | null = null;\n' +
+    '\n' +
+    '  constructor(gpuContext: any) {\n' +
+    '    this.device = gpuContext.device;\n' +
+    '    this.context = gpuContext.context;\n' +
+    '    this.format = gpuContext.format;\n' +
+    '  }\n' +
+    '\n' +
+    '  async initialize(): Promise<void> {\n' +
+    '    // You can use triangleShaders.vertex and triangleShaders.fragment\n' +
+    '    const vertexShaderModule = await createShaderModule(this.device, triangleShaders.vertex);\n' +
+    '    const fragmentShaderModule = await createShaderModule(this.device, triangleShaders.fragment);\n' +
+    '\n' +
+    '    // Example triangle vertices (position + color)\n' +
+    '    const vertices = new Float32Array([\n' +
+    '      // Position, Color\n' +
+    '      0.0, 0.5, 0.0, 1.0, 0.0, 0.0, // Top - Red\n' +
+    '      -0.5, -0.5, 0.0, 0.0, 1.0, 0.0, // Bottom Left - Green\n' +
+    '      0.5, -0.5, 0.0, 0.0, 0.0, 1.0, // Bottom Right - Blue\n' +
+    '    ]);\n' +
+    '\n' +
+    '    this.vertexBuffer = this.device.createBuffer({\n' +
+    '      size: vertices.byteLength,\n' +
+    '      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,\n' +
+    '    });\n' +
+    '    this.device.queue.writeBuffer(this.vertexBuffer, 0, vertices);\n' +
+    '\n' +
+    '    const vertexBufferLayout: GPUVertexBufferLayout = {\n' +
+    '      arrayStride: 24, // 6 floats * 4 bytes\n' +
+    '      attributes: [\n' +
+    '        {\n' +
+    '          format: "float32x3",\n' +
+    '          offset: 0,\n' +
+    '          shaderLocation: 0,\n' +
+    '        },\n' +
+    '        {\n' +
+    '          format: "float32x3",\n' +
+    '          offset: 12,\n' +
+    '          shaderLocation: 1,\n' +
+    '        },\n' +
+    '      ],\n' +
+    '    };\n' +
+    '\n' +
+    '    this.pipeline = this.device.createRenderPipeline({\n' +
+    '      layout: "auto",\n' +
+    '      vertex: {\n' +
+    '        module: vertexShaderModule,\n' +
+    '        entryPoint: "main",\n' +
+    '        buffers: [vertexBufferLayout],\n' +
+    '      },\n' +
+    '      fragment: {\n' +
+    '        module: fragmentShaderModule,\n' +
+    '        entryPoint: "main",\n' +
+    '        targets: [\n' +
+    '          {\n' +
+    '            format: this.format,\n' +
+    '          },\n' +
+    '        ],\n' +
+    '      },\n' +
+    '      primitive: {\n' +
+    '        topology: "triangle-list",\n' +
+    '      },\n' +
+    '    });\n' +
+    '  }\n' +
+    '\n' +
+    '  render(): void {\n' +
+    '    if (!this.pipeline || !this.vertexBuffer) {\n' +
+    '      throw new Error("Renderer not initialized");\n' +
+    '    }\n' +
+    '\n' +
+    '    const commandEncoder = this.device.createCommandEncoder();\n' +
+    '    const textureView = this.context.getCurrentTexture().createView();\n' +
+    '\n' +
+    '    const renderPass: GPURenderPassDescriptor = {\n' +
+    '      colorAttachments: [\n' +
+    '        {\n' +
+    '          view: textureView,\n' +
+    '          clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },\n' +
+    '          loadOp: "clear",\n' +
+    '          storeOp: "store",\n' +
+    '        },\n' +
+    '      ],\n' +
+    '    };\n' +
+    '\n' +
+    '    const passEncoder = commandEncoder.beginRenderPass(renderPass);\n' +
+    '    passEncoder.setPipeline(this.pipeline);\n' +
+    '    passEncoder.setVertexBuffer(0, this.vertexBuffer);\n' +
+    '    passEncoder.draw(3, 1, 0, 0);\n' +
+    '    passEncoder.end();\n' +
+    '\n' +
+    '    this.device.queue.submit([commandEncoder.finish()]);\n' +
+    '  }\n' +
+    '}'
+  );
+}
