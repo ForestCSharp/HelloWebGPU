@@ -24,7 +24,8 @@
   },
   "dependencies": {
     "@monaco-editor/loader": "^1.7.0",
-    "monaco-editor": "^0.55.1"
+    "monaco-editor": "^0.55.1",
+    "wgpu-matrix": "^3.4.2"
   },
   "engines": {
     "bun": ">=1.0.0"
