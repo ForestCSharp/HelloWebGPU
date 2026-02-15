@@ -100,7 +100,7 @@ export async function initializeEditor(): Promise<editor.IStandaloneCodeEditor> 
     theme: 'vs-dark',
     automaticLayout: true,
     minimap: { enabled: false },
-    fontSize: 14,
+    fontSize: 12,
     lineNumbers: 'on',
     scrollBeyondLastLine: false,
     wordWrap: 'on',
