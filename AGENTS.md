@@ -167,6 +167,48 @@ try {
 - WebGPU device is created fresh for each execution
 - No sensitive data is exposed to user code
 
+## Example Code Limitations
+
+### No Top-Level Async/Await
+
+Since example code is executed via `new Function()`, top-level `await` is not supported. This means you cannot use `async/await` at the module level in example code.
+
+**Don't do this:**
+
+```typescript
+const data = await fetch(url); // Error: await is only valid in async functions
+```
+
+**Instead, use synchronous XMLHttpRequest:**
+
+```typescript
+function loadSync(url: string): string {
+  const xhr = new XMLHttpRequest();
+  xhr.open('GET', url, false); // false = synchronous
+  xhr.send();
+  if (xhr.status !== 200) {
+    throw new Error(`Failed to load ${url}: ${xhr.status}`);
+  }
+  return xhr.responseText;
+}
+
+// Usage
+const data = loadSync(url);
+const json = JSON.parse(data);
+```
+
+For binary data, set `responseType` before sending:
+
+```typescript
+function loadBufferSync(url: string): ArrayBuffer {
+  const xhr = new XMLHttpRequest();
+  xhr.open('GET', url, false);
+  xhr.responseType = 'arraybuffer';
+  xhr.send();
+  return xhr.response;
+}
+```
+
 ## Backup Files
 
 Previous implementations are backed up in `/backup/`:
