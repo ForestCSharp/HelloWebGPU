@@ -2,7 +2,7 @@
 
 A browser-based TypeScript editor with WebGPU rendering support. Features a Monaco editor for writing TypeScript code that gets transpiled and executed, with a split-pane output showing WebGPU canvas rendering and console output.
 
-![Project Screenshot](screenshot.png)
+![Project Screenshot](project_screenshot.png)
 
 ## Features
 
