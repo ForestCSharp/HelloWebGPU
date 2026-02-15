@@ -29,5 +29,6 @@
     /* WebGPU types are built into TypeScript lib DOM */
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts"],
+  "exclude": ["src/examples/**/*"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
