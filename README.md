@@ -1,8 +1,8 @@
-# TypeScript Console Editor with WebGPU
+# WebGPU Example Browser and Editor
 
-A browser-based TypeScript editor with WebGPU rendering support. Features a Monaco editor for writing TypeScript code that gets transpiled and executed, with a split-pane output showing WebGPU canvas rendering and console output.
+A WebGPU example browser that allows you to edit the examples and see your changes.
 
-Check it out at [https://forestcsharp.github.io/HelloWebGPU/](https://forestcsharp.github.io/HelloWebGPU/)
+Check it out at: [https://forestcsharp.github.io/HelloWebGPU/](https://forestcsharp.github.io/HelloWebGPU/)
 
 ![Project Screenshot](project_screenshot.png)
 
@@ -24,7 +24,7 @@ bun install
 bun run dev
 ```
 
-Then open your browser to the URL shown in the terminal (typically http://localhost:5173).
+Then open your browser to the URL shown in the terminal.
 
 ## Usage
 
@@ -126,7 +126,7 @@ Requires a modern browser with WebGPU support:
 
 ### Code Execution Flow
 
-1. User writes TypeScript code in Monaco editor
+1. User writes TypeScript code in editor
 2. User clicks "Compile & Run" button
 3. Code is transpiled using `ts.transpileModule()`
 4. TypeScript errors are shown if present
