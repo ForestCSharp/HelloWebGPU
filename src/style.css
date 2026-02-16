@@ -43,6 +43,40 @@ h1 {
   transform: translateX(-50%);
 }
 
+.header-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.github-label {
+  color: #a0a0a0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.github-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #a0a0a0;
+  transition:
+    color 0.2s ease,
+    transform 0.2s ease;
+  padding: 8px;
+}
+
+.github-link:hover {
+  color: #ffffff;
+  transform: scale(1.1);
+}
+
+.github-icon {
+  width: 28px;
+  height: 28px;
+}
+
 .compile-button {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
@@ -229,7 +263,7 @@ select {
   padding: 8px 36px 8px 16px;
   font-size: 14px;
   font-weight: 500;
-  
+
   /* Borders & Shape */
   border: 1px solid #4a4a6a;
   border-radius: 8px; /* Matches your button's curve */
