@@ -41,7 +41,7 @@ const fragmentShaderCode =
   `
   @fragment
   fn main(input : VS_to_FS) -> @location(0) vec4<f32> {
-    return input.color; // Red color
+    return input.color; 
   }
 `;
 
